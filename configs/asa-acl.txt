@@ -1,0 +1,7 @@
+! Outside-in rules captured from the lab configuration
+access-list OUTSIDE-IN extended permit tcp host 203.0.113.10 host 192.168.20.10 eq www
+access-list OUTSIDE-IN extended permit icmp host 203.0.113.10 host 192.168.20.10
+access-group OUTSIDE-IN in interface outside
+
+! Note: the ACL's hit counter must be checked during a fresh test;
+! a hitcnt=0 screenshot does not prove a rule matched.
