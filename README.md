@@ -148,9 +148,6 @@ network-security-monitoring-lab/
 │   ├── asa-interface-summary.txt
 │   ├── outside-switch-port-security.txt
 │   └── inside-switch-port-security.txt
-├── docs/
-│   ├── addressing-plan.md
-│   └── interview-questions.md
 └── screenshots/
     └── selected Packet Tracer evidence
 ```
