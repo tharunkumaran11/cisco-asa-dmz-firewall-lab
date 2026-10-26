@@ -1,3 +1,3 @@
 timestamp,device,monitor_type,test_name,source,destination,expected_result,actual_result
 2026-10-26T00:00:00Z,SW-INSIDE,CONNECTIVITY,Inside-PC-connectivity,192.168.10.10,192.168.10.11,PING_SUCCESS,PING_SUCCESS
-2026-10-26T00:00:00Z,SW-ASA,ACL,Outside-to-inside-ping,203.0.113.10,192.168.10.10,PING_BLOCKED,PING_BLOCKED
+2026-10-26T00:00:00Z,SW-ASA,ACL,Outside-to-inside-ping,203.0.113.10,192.168.10.10,PING_BLOCKED,PING_TIMEOUT
