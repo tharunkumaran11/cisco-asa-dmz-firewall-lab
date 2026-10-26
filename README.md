@@ -1,12 +1,14 @@
 # Cisco ASA Firewall & DMZ Security Lab
 
-A hands-on network security lab built in **Cisco Packet Tracer**. I designed a three-zone network (inside, DMZ, outside) around a **Cisco ASA 5505** firewall, published a web server in the DMZ, restricted outside access with a host-specific ACL, and hardened the access switches with **port security**.
+A hands-on network security lab built in **Cisco Packet Tracer**. I designed a three-zone network (inside, DMZ, outside) around a **Cisco ASA 5505** firewall, published a web server in the DMZ, restricted outside access with a host-specific ACL, and hardened the access switches with **port security**. A small Python script summarises the tests I recorded.
 
 ![Network topology](screenshots/01-topology.png)
 
 ## Why I built this
 
-I'm building my foundation in cloud, DevOps and security, and I wanted to understand how traffic is actually separated and controlled at the network layer before it reaches any application. This lab covers three ideas:
+My earlier projects are in cloud and DevOps (AWS, Kubernetes, CI/CD). I wanted to understand the network layer underneath them: how traffic is separated, who is allowed to reach what, and how a device gets blocked. The ideas here, such as network zones, allow-lists and least privilege, are the same in spirit as subnets, security groups and network ACLs in AWS.
+
+This lab covers three ideas:
 
 - **Segmentation:** keeping untrusted, semi-trusted and trusted networks apart
 - **Least privilege:** allowing only what is needed instead of opening whole subnets
@@ -37,7 +39,7 @@ I'm building my foundation in cloud, DevOps and security, and I wanted to unders
 
 The `203.0.113.0/24` range is reserved for documentation and examples, so I used it as a safe simulated "internet".
 
-## Security design
+## How the design works
 
 ### Firewall zones
 
@@ -47,7 +49,7 @@ The `203.0.113.0/24` range is reserved for documentation and examples, so I used
 | Vlan3 | `dmz` | 50 | `192.168.20.0/24` |
 | Vlan2 | `outside` | 0 | `203.0.113.0/24` |
 
-Traffic flows freely from higher to lower security levels. Traffic from lower to higher is denied unless an ACL permits it. The ASA 5505 on this license requires `no forward interface Vlan1` on the DMZ interface, which stops the DMZ from initiating connections to the inside network.
+The ASA uses security levels to decide what flows by default. Traffic from a higher level to a lower level (inside to DMZ or outside) is allowed. Traffic from a lower level to a higher level is denied unless an ACL permits it. That is why the outside network can't reach the employee network without any rule written for it.
 
 ### Outside access control list
 
@@ -73,19 +75,65 @@ switchport port-security violation restrict
 switchport port-security mac-address sticky
 ```
 
-Each port learns the first device's MAC address and accepts only that device. If a different device is plugged in, its frames are dropped and a violation is logged, but the port stays up.
+## Design decisions
+
+**Why a DMZ instead of putting the web server on the employee LAN?**
+A public-facing server is the most likely thing to be attacked. In the DMZ, it sits in its own subnet with its own security level (50). The ASA 5505 on this license also requires `no forward interface Vlan1` on the DMZ interface, which stops the DMZ from starting connections to the inside network. A compromised web server therefore has no direct path into the employee network.
+
+**Why allow one host instead of the whole outside network?**
+Permitting a single source (`203.0.113.10`) to a single destination (`192.168.20.10`) on a single service (HTTP) is least privilege. Opening a subnet or using `any` would allow far more than the test needs. ICMP is permitted only for troubleshooting and could be removed in a real deployment.
+
+**Why sticky MAC with a maximum of 1?**
+Sticky learning means I don't have to type each MAC address by hand: the switch learns the first device and remembers it. A maximum of 1 means a second device plugged into the same port is not accepted.
+
+**Why `violation restrict` instead of `shutdown`?**
+`restrict` drops frames from the unknown device, counts and logs the violation, and keeps the port up. `shutdown` is stricter but disables the port completely, so one mistake or one rogue cable takes a legitimate user offline until someone resets it. I chose `restrict` to show the trade-off between security and availability.
 
 ## Test results
 
 | Test | Result |
 |---|---|
 | Employee-to-employee ping (`PC-EMPLOYEE1` to `PC-EMPLOYEE2`) | Succeeded |
-| Outside host pinging an employee PC (`203.0.113.10` to `192.168.10.10`) | Timed out, so the inside network is not reachable from outside |
+| Outside host pinging an employee PC (`203.0.113.10` to `192.168.10.10`) | 4 sent, 0 received, 100% loss (timed out) |
 | Port security status on inside ports | Secure-up, one sticky MAC learned, zero violations at capture time |
 | HTTP service on `SRV-DMZ` | Enabled |
 | Outside host browsing to `http://192.168.20.10` | Worked in one test run but was inconsistent in later runs |
 
-The HTTP result is the one I'm least happy with. Packet Tracer's ASA simulation can behave inconsistently, so I'm recording what I observed rather than claiming it is repeatable. A timeout also doesn't tell me exactly which control dropped the packet, since the ASA's default behavior denies lower-to-higher traffic anyway. I'd confirm that with ACL hit counters before and after each test.
+Two things I want to be clear about:
+
+- **A timeout doesn't prove which control blocked the packet.** The ASA denies lower-to-higher traffic by default, so the ping would time out even without my ACL. Confirming that the firewall dropped it needs ACL hit counters before and after the test, and my current ACL has no explicit deny line that would produce one. That is the first item in my next steps.
+- **The DMZ HTTP result is inconsistent.** Packet Tracer's ASA simulation can behave unpredictably, so I am recording what I observed instead of claiming it is repeatable.
+
+## Test log and analysis script
+
+The `monitoring/` folder holds a record of the tests I ran and a small Python script that summarises it.
+
+- `monitoring-log.csv`: one row per test, with the device, source, destination, expected result and the result I observed in Packet Tracer.
+- `analyse_monitoring.py`: reads the CSV, labels each test `PASS` or `INVESTIGATE`, and prints a summary.
+
+```
+cd monitoring
+python analyse_monitoring.py
+```
+
+Current output:
+
+```
+[PASS] Inside-PC-connectivity
+  Path: 192.168.10.10 -> 192.168.10.11
+  Expected: PING_SUCCESS | Actual: PING_SUCCESS
+
+[INVESTIGATE] Outside-to-inside-ping
+  Path: 203.0.113.10 -> 192.168.10.10
+  Expected: PING_BLOCKED | Actual: PING_TIMEOUT
+  Note: Ping timed out as expected; verify ASA ACL counters before attributing the block to the firewall.
+
+Summary:
+  PASS: 1
+  INVESTIGATE: 1
+```
+
+The script only analyses results I typed in. It doesn't capture live traffic and can't show which device caused a failure. It marks the blocked-ping test `INVESTIGATE` on purpose, for the reason in the previous section.
 
 ## Screenshots
 
@@ -122,6 +170,7 @@ The Packet Tracer project file is not included. The addressing plan, configs and
 6. From `PC-EMPLOYEE1`, run `ping 192.168.10.11`.
 7. From `PC-ATTACKER`, run `ping 192.168.10.10` (expect a timeout), then open `http://192.168.20.10` in the browser.
 8. Run `show access-list` before and after step 7 and compare the hit counters.
+9. Record each result as a row in `monitoring/monitoring-log.csv` and run `python analyse_monitoring.py` from the `monitoring/` folder.
 
 ## Repository structure
 
@@ -133,21 +182,26 @@ The Packet Tracer project file is not included. The addressing plan, configs and
 │   ├── asa-interface-summary.txt
 │   ├── inside-switch-port-security.txt
 │   └── outside-switch-port-security.txt
+├── monitoring/
+│   ├── analyse_monitoring.py
+│   └── monitoring-log.csv
 └── screenshots/
 ```
 
 ## Limitations and next steps
 
-This is a learning lab in a simulator, not a production design. It uses a single firewall, one permitted outside host and no logging or alerting.
+This is a learning lab in a simulator, not a production design. It uses a single firewall and one permitted outside host. There is no live monitoring: the ASA doesn't send logs anywhere, and the analysis script reads results I recorded by hand.
 
 What I plan to improve next:
-- Repeat the HTTP test several times and record ACL hit counters for each run
-- Add logging on the ASA so denied traffic is visible
-- Add an explicit deny rule and test it
+
+- Add an explicit `deny ip any any` line to the ACL so blocked traffic produces a hit counter, then confirm the blocked ping with it
+- Repeat the HTTP test several times and record every run in the CSV
+- Add a column to the CSV that records whether ACL counters were checked, so a confirmed block can be marked `PASS`
+- Send ASA logs to a syslog server so denied traffic is visible
 
 ## Skills demonstrated
 
-Network segmentation · Cisco ASA firewall configuration · Access control lists · DMZ design · Switch port security · Network troubleshooting · Technical documentation
+Network segmentation · Cisco ASA firewall configuration · Access control lists · DMZ design · Switch port security · Network troubleshooting · Basic Python scripting · Technical documentation
 
 ## Author
 
