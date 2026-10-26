@@ -1,157 +1,155 @@
-# Network Security and Monitoring Lab — Cisco Packet Tracer
+# Cisco ASA Firewall & DMZ Security Lab
 
-A Cisco Packet Tracer lab demonstrating network segmentation with an ASA 5505 firewall, a DMZ web server, inside employee endpoints, an outside test host, and switch port security.
+A hands-on network security lab built in **Cisco Packet Tracer**. I designed a three-zone network (inside, DMZ, outside) around a **Cisco ASA 5505** firewall, published a web server in the DMZ, restricted outside access with a host-specific ACL, and hardened the access switches with **port security**.
 
-> **Interview accuracy note:** This repository documents the configured design and the evidence captured during the lab. Packet Tracer tests can be inconsistent, so claims below distinguish configured controls from observed test results. Do not claim that an ACL hit counter proves a packet was blocked unless the counter visibly increments during that exact test.
+![Network topology](screenshots/01-topology.png)
 
-## Project goals
+## Why I built this
 
-- Separate the outside, inside, and DMZ networks.
-- Publish a web service in the DMZ rather than placing it directly on the employee LAN.
-- Apply an outside-in ACL that permits the specified outside host to access the DMZ web server over HTTP and permits ICMP to that server for lab testing.
-- Use switch port security with sticky MAC learning and a maximum of one MAC address on selected access ports.
-- Validate employee-to-employee connectivity and demonstrate an outside-to-inside attempt that times out.
+I'm building my foundation in cloud, DevOps and security, and I wanted to understand how traffic is actually separated and controlled at the network layer before it reaches any application. This lab covers three ideas:
+
+- **Segmentation:** keeping untrusted, semi-trusted and trusted networks apart
+- **Least privilege:** allowing only what is needed instead of opening whole subnets
+- **Layer 2 hardening:** limiting which devices can plug into a switch port
 
 ## Topology
 
-![Packet Tracer topology](screenshots/01-topology.png)
-
-Devices:
-- `FW-ASA` — Cisco ASA 5505, ASA 8.4(2)
-- `SW-OUTSIDE` — Cisco 2960 access switch
-- `SW-INSIDE` — Cisco 2960 access switch
-- `PC-ATTACKER` — outside test host
-- `PC-EMPLOYEE1`, `PC-EMPLOYEE2` — inside endpoints
-- `SRV-DMZ` — DMZ web server
+| Device | Role |
+|---|---|
+| `FW-ASA` | Cisco ASA 5505 (ASA 8.4(2)), the firewall between all three zones |
+| `SW-OUTSIDE` | Cisco 2960 switch on the outside network |
+| `SW-INSIDE` | Cisco 2960 switch for employee devices |
+| `PC-ATTACKER` | Outside test host that simulates an external user |
+| `PC-EMPLOYEE1`, `PC-EMPLOYEE2` | Inside employee endpoints |
+| `SRV-DMZ` | Web server in the DMZ |
 
 ## Addressing plan
 
-| Device / interface | Address | Default gateway / role |
-|---|---:|---|
-| ASA outside (Vlan2) | `203.0.113.1/24` | Outside gateway |
+| Device / interface | IP address | Gateway |
+|---|---|---|
+| ASA outside (Vlan2) | `203.0.113.1/24` | n/a |
 | PC-ATTACKER | `203.0.113.10/24` | `203.0.113.1` |
-| ASA inside (Vlan1) | `192.168.10.1/24` | Inside gateway |
+| ASA inside (Vlan1) | `192.168.10.1/24` | n/a |
 | PC-EMPLOYEE1 | `192.168.10.10/24` | `192.168.10.1` |
 | PC-EMPLOYEE2 | `192.168.10.11/24` | `192.168.10.1` |
-| ASA DMZ (Vlan3) | `192.168.20.1/24` | DMZ gateway |
+| ASA DMZ (Vlan3) | `192.168.20.1/24` | n/a |
 | SRV-DMZ | `192.168.20.10/24` | `192.168.20.1` |
 
-The `203.0.113.0/24` range is reserved for documentation/examples and is used here as a simulated outside network.
+The `203.0.113.0/24` range is reserved for documentation and examples, so I used it as a safe simulated "internet".
 
 ## Security design
 
-### ASA interface zones
+### Firewall zones
 
-| ASA VLAN | Nameif | Security level | Subnet |
+| ASA VLAN | Zone name | Security level | Subnet |
 |---|---|---:|---|
 | Vlan1 | `inside` | 100 | `192.168.10.0/24` |
-| Vlan2 | `outside` | 0 | `203.0.113.0/24` |
 | Vlan3 | `dmz` | 50 | `192.168.20.0/24` |
+| Vlan2 | `outside` | 0 | `203.0.113.0/24` |
 
-The saved configuration includes `no forward interface Vlan1` under Vlan3. This is an ASA 5505/Packet Tracer-specific forwarding restriction in this lab and should be discussed honestly if asked; it can affect traffic between the DMZ and inside network.
+Traffic flows freely from higher to lower security levels. Traffic from lower to higher is denied unless an ACL permits it. The ASA 5505 on this license requires `no forward interface Vlan1` on the DMZ interface, which stops the DMZ from initiating connections to the inside network.
 
 ### Outside access control list
 
-The configured ACL rules are:
-
-```text
+```
 access-list OUTSIDE-IN extended permit tcp host 203.0.113.10 host 192.168.20.10 eq www
 access-list OUTSIDE-IN extended permit icmp host 203.0.113.10 host 192.168.20.10
 access-group OUTSIDE-IN in interface outside
 ```
 
-Meaning:
-- Permit TCP HTTP (destination port 80) from `203.0.113.10` to `192.168.20.10`.
-- Permit ICMP from that same outside host to the DMZ server for lab testing.
-- Apply the ACL inbound on the outside interface.
-- Other outside-initiated traffic is not explicitly permitted by these ACL entries and is subject to the ASA's inbound ACL behavior.
-
-**Important:** The HTTP and ICMP permits are narrow host-to-host rules, not unrestricted access to the DMZ or inside LAN. A screenshot showing an ACL line with `hitcnt=0` means that screenshot does **not** prove that rule matched traffic at that moment.
+- Only one outside host (`203.0.113.10`) is allowed through.
+- It can reach only one destination (the DMZ web server) and only over HTTP, plus ICMP for troubleshooting.
+- Nothing from the outside is permitted to the employee network.
 
 ### Switch port security
 
-Selected access ports use:
-- `switchport mode access`
-- `switchport port-security`
-- `switchport port-security maximum 1`
-- `switchport port-security violation restrict`
-- `switchport port-security mac-address sticky`
+Applied to the employee access ports on `SW-INSIDE` (Fa0/1, Fa0/2) and the attacker port on `SW-OUTSIDE` (Fa0/1):
 
-Sticky MAC learning binds the port to the first learned endpoint MAC address. `restrict` drops frames from a violating MAC and increments the violation counter without shutting the port down. The screenshots show secure-up status, one learned sticky MAC, and zero violations at the time of capture.
+```
+switchport mode access
+switchport port-security
+switchport port-security maximum 1
+switchport port-security violation restrict
+switchport port-security mac-address sticky
+```
 
-## Evidence and validation
+Each port learns the first device's MAC address and accepts only that device. If a different device is plugged in, its frames are dropped and a violation is logged, but the port stays up.
 
-The `screenshots/` folder contains selected original Packet Tracer screenshots. Screenshots are included as evidence, not edited or altered.
+## Test results
 
-| Evidence | What it supports | What it does not prove by itself |
-|---|---|---|
-| `01-topology.png` | Device layout and zone design | That every path works |
-| `02-asa-interface-status.png` | ASA Ethernet/VLAN interface status at capture time | End-to-end application reachability |
-| `03-asa-configuration.png` | Visible ASA interface and ACL configuration | ACL rule hit or packet drop unless the counter/log demonstrates it |
-| `04-attacker-blocked-from-inside.png` | An outside host's ping attempt to `192.168.10.10` timed out | The exact drop reason; a timeout can have multiple causes |
-| `05-inside-switch-port-security.png` | Port-security status for inside access ports | Protection against every possible attack |
-| `06-attacker-ping-test.png` | The outside-to-inside test result captured in the command prompt | That an ACL counter incremented during the test |
-| `07-dmz-http-service.png` | HTTP service is enabled on the DMZ server | Successful access from every client/zone |
-| `08-topology-validation.png` | Additional Packet Tracer topology/test context | A complete security audit |
-| `09-http-browser-test.png` | Browser evidence captured during testing | Consistent HTTP success unless the page is visibly loaded in that screenshot |
+| Test | Result |
+|---|---|
+| Employee-to-employee ping (`PC-EMPLOYEE1` to `PC-EMPLOYEE2`) | Succeeded |
+| Outside host pinging an employee PC (`203.0.113.10` to `192.168.10.10`) | Timed out, so the inside network is not reachable from outside |
+| Port security status on inside ports | Secure-up, one sticky MAC learned, zero violations at capture time |
+| HTTP service on `SRV-DMZ` | Enabled |
+| Outside host browsing to `http://192.168.20.10` | Worked in one test run but was inconsistent in later runs |
 
-### Observed results to discuss
+The HTTP result is the one I'm least happy with. Packet Tracer's ASA simulation can behave inconsistently, so I'm recording what I observed rather than claiming it is repeatable. A timeout also doesn't tell me exactly which control dropped the packet, since the ASA's default behavior denies lower-to-higher traffic anyway. I'd confirm that with ACL hit counters before and after each test.
 
-- Employee-to-employee ping succeeded in the captured test.
-- The outside host's ping attempt to employee host `192.168.10.10` timed out in the captured test.
-- Switch port security was enabled on the shown access ports; one sticky MAC was learned and the violation counter was zero at capture time.
-- The DMZ server's HTTP service was enabled.
-- HTTP access was observed working during one test, but subsequent tests were inconsistent. Therefore, the repository does **not** claim repeatable HTTP reachability or use the zero ACL hit counter as proof of a successful ACL match.
+## Screenshots
 
-If you want to make a stronger claim during a live interview, reproduce the test in Packet Tracer and capture `show access-list` immediately before and after the traffic. A rising hit counter is stronger evidence that the matching ACL rule processed the traffic. For a failed outside-to-inside test, capture the failed ping and, where supported by Packet Tracer, the relevant ACL/counter evidence.
+| File | Shows |
+|---|---|
+| [`01-topology.png`](screenshots/01-topology.png) | Network layout and zones |
+| [`02-asa-interface-status.png`](screenshots/02-asa-interface-status.png) | ASA interface status |
+| [`03-asa-configuration.png`](screenshots/03-asa-configuration.png) | ASA interface and ACL configuration |
+| [`04-attacker-blocked-from-inside.png`](screenshots/04-attacker-blocked-from-inside.png) | Outside host's ping to the inside network timing out |
+| [`05-inside-switch-port-security.png`](screenshots/05-inside-switch-port-security.png) | Port-security status on the inside switch |
+| [`06-attacker-ping-test.png`](screenshots/06-attacker-ping-test.png) | Attacker ping test in the command prompt |
+| [`07-dmz-http-service.png`](screenshots/07-dmz-http-service.png) | HTTP service enabled on the DMZ server |
+| [`08-topology-validation.png`](screenshots/08-topology-validation.png) | Additional topology and test context |
+| [`09-http-browser-test.png`](screenshots/09-http-browser-test.png) | Browser test against the DMZ server |
 
-## Reproduction walkthrough
+## How to reproduce
 
-1. Open `project-3.pkt` in Cisco Packet Tracer. The `.pkt` file is not included in this package because it was not uploaded as a file attachment; add your saved Packet Tracer project file to the repository before publishing if you want reviewers to open the simulation.
-2. Confirm the IP addresses and default gateways against the table above.
-3. On `SRV-DMZ`, open **Services → HTTP** and confirm HTTP is On.
-4. On `FW-ASA`, inspect:
-   ```text
+The Packet Tracer project file is not included. The addressing plan, configs and screenshots in this repo contain everything needed to rebuild the lab.
+
+1. Rebuild the topology in Cisco Packet Tracer using the diagram in `screenshots/01-topology.png` (one ASA 5505, two 2960 switches, two employee PCs, one attacker PC and one server).
+2. Check the IP addresses and gateways against the addressing plan above.
+3. On `SRV-DMZ`, go to **Services > HTTP** and make sure HTTP is on.
+4. On `FW-ASA`, apply the configs from `configs/` and run:
+   ```
    show interface ip brief
    show running-config
    show access-list
    ```
-5. On `SW-OUTSIDE` and `SW-INSIDE`, inspect:
-   ```text
+5. On both switches, apply the port-security configs and run:
+   ```
    show port-security
    show port-security address
-   show running-config
    ```
-6. From `PC-EMPLOYEE1`, run `ping 192.168.10.11` to demonstrate the recorded inside endpoint connectivity.
-7. From `PC-ATTACKER`, run `ping 192.168.10.10` and record the result. A timeout is the observed outcome in the included evidence, but it is not sufficient by itself to attribute the drop to one specific control.
-8. From `PC-ATTACKER`, open the browser and try `http://192.168.20.10`. Record the actual result from the current run; do not infer success from a previous run.
-9. Run `show access-list` before and after a test and compare hit counters. Only report a rule match if the relevant counter increases.
-
-## Interview demonstration script (about 2 minutes)
-
-1. **Introduce the problem:** “This lab demonstrates basic network segmentation and access control in Packet Tracer. I separated employee endpoints, an outside test host, and a DMZ web server.”
-2. **Show the topology:** Point out the ASA and the three logical zones: inside, outside, and DMZ.
-3. **Explain least privilege:** “The outside ACL is written as a host-specific permit for HTTP to the DMZ server, with ICMP added for troubleshooting. It is not a general permit to the employee subnet.”
-4. **Show the firewall configuration:** Explain the interface names/security levels and the inbound ACL. Mention that a zero hit counter is not evidence of a rule match.
-5. **Show port security:** Explain sticky MAC, maximum one MAC, and restrict mode on access ports.
-6. **Show the tests:** Employee-to-employee ping succeeded; the captured attacker-to-inside ping timed out. Explain that a timeout is an observed result, while the exact drop cause should be confirmed with counters/logs.
-7. **Close with limitations:** “This is a learning simulation, not a production deployment. I would repeat the end-to-end tests and collect before/after counters to prove each policy path consistently.”
+6. From `PC-EMPLOYEE1`, run `ping 192.168.10.11`.
+7. From `PC-ATTACKER`, run `ping 192.168.10.10` (expect a timeout), then open `http://192.168.20.10` in the browser.
+8. Run `show access-list` before and after step 7 and compare the hit counters.
 
 ## Repository structure
 
-```text
-network-security-monitoring-lab/
+```
+.
 ├── README.md
-├── .gitignore
 ├── configs/
 │   ├── asa-acl.txt
 │   ├── asa-interface-summary.txt
-│   ├── outside-switch-port-security.txt
-│   └── inside-switch-port-security.txt
+│   ├── inside-switch-port-security.txt
+│   └── outside-switch-port-security.txt
 └── screenshots/
-    └── selected Packet Tracer evidence
 ```
 
-## Scope and limitations
+## Limitations and next steps
 
-This is a Packet Tracer learning project. It demonstrates configuration concepts and selected observed tests; it is not a claim of exhaustive security testing, production hardening, or guaranteed repeatable reachability. The Packet Tracer `.pkt` file should be added by the author if it is to be distributed with this repository.
+This is a learning lab in a simulator, not a production design. It uses a single firewall, one permitted outside host and no logging or alerting.
+
+What I plan to improve next:
+- Repeat the HTTP test several times and record ACL hit counters for each run
+- Add logging on the ASA so denied traffic is visible
+- Add an explicit deny rule and test it
+
+## Skills demonstrated
+
+Network segmentation · Cisco ASA firewall configuration · Access control lists · DMZ design · Switch port security · Network troubleshooting · Technical documentation
+
+## Author
+
+**Tharun Kumaran M**
+[LinkedIn](https://www.linkedin.com/in/tharunkumaran11) · [GitHub](https://github.com/tharunkumaran11)
